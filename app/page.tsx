@@ -1,6 +1,51 @@
-import Sequencer from "./components/Sequencer";
+import fs from 'fs';
+import path from 'path';
+import Sequencer from "./Sequencer";
+
+// Fonction exécutée côté serveur pour lister les fichiers
+function getSampleLibrary() {
+  const samplesDir = path.join(process.cwd(), 'public', 'samples');
+  const library: Record<string, { name: string; url: string }[]> = {
+    Kick: [],
+    Snare: [],
+    'Hi-Hat': [],
+    Clap: []
+  };
+
+  if (fs.existsSync(samplesDir)) {
+    const items = fs.readdirSync(samplesDir, { withFileTypes: true });
+
+    items.forEach(item => {
+      if (item.isDirectory()) {
+        const folderName = item.name.toLowerCase();
+        let category = '';
+
+        // Mapping des dossiers vers les catégories d'instruments
+        if (folderName.includes('kick')) category = 'Kick';
+        else if (folderName.includes('snare')) category = 'Snare';
+        else if (folderName.includes('hat')) category = 'Hi-Hat';
+        else if (folderName.includes('clap')) category = 'Clap';
+
+        if (category) {
+          const files = fs.readdirSync(path.join(samplesDir, item.name));
+          files.forEach(file => {
+            if (/\.(wav|mp3|aif)$/i.test(file)) {
+              library[category].push({
+                name: file,
+                url: `/samples/${item.name}/${file}`
+              });
+            }
+          });
+        }
+      }
+    });
+  }
+  return library;
+}
 
 export default function Home() {
+  const sampleLibrary = getSampleLibrary();
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-black">
       <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm lg:flex mb-8">
@@ -11,7 +56,7 @@ export default function Home() {
       </div>
 
       <div className="w-full flex justify-center">
-        <Sequencer />
+        <Sequencer initialLibrary={sampleLibrary} />
       </div>
     </main>
   );
