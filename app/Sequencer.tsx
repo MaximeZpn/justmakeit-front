@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
-import * as Tone from 'tone/build/esm/index';
+import * as Tone from 'tone';
 
 type Sample = { name: string; url: string };
 type Library = Record<string, Sample[]>;
@@ -112,9 +112,7 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
       "16n"
     );
 
-    if (isPlaying) {
-      loopRef.current.start(0);
-    }
+    loopRef.current.start(0);
 
     return () => {
       loopRef.current?.dispose();
@@ -202,7 +200,7 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
   };
 
   useEffect(() => {
-    let animationId: number;
+    let animationId: number = 0;
 
     const animate = () => {
       if (isPlaying && backingPlayerRef.current && backingPlayerRef.current.loaded) {
@@ -236,10 +234,8 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
       await Tone.start();
       if (Tone.context.state !== 'running') await Tone.context.resume();
       Tone.Transport.start();
-      loopRef.current?.start(0);
     } else {
       Tone.Transport.stop();
-      loopRef.current?.stop();
       setCurrentStep(0);
     }
     setIsPlaying(!isPlaying);
