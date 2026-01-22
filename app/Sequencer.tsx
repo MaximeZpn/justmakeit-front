@@ -73,27 +73,25 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
 
   // 1. Initialize Players (Tracks)
   useEffect(() => {
-    // Nettoyage des anciens players si le nombre de pistes change
-    if (playersRef.current.length !== tracks.length) {
-      playersRef.current.forEach(p => p?.dispose());
-      
-      playersRef.current = tracks.map((track) => {
-        if (track.url) {
-          return new Tone.Player({
-            url: track.url,
-            mute: track.isMuted,
-            onload: () => console.log(`✅ ${track.name} chargé !`),
-            onerror: (e: Error) => {
-              console.error(`❌ Erreur de chargement ${track.name}:`, e);
-              if (track.url && e.message && e.message.includes('EncodingError')) {
-                console.warn(`💡 CONSEIL: Le fichier "${track.url.split('/').pop()}" a peut-être un format non supporté.`);
-              }
+    // On nettoie toujours les anciens players avant d'en recréer pour éviter les fuites de mémoire
+    playersRef.current.forEach(p => p?.dispose());
+    
+    playersRef.current = tracks.map((track) => {
+      if (track.url) {
+        return new Tone.Player({
+          url: track.url,
+          mute: track.isMuted,
+          onload: () => console.log(`✅ ${track.name} chargé !`),
+          onerror: (e: Error) => {
+            console.error(`❌ Erreur de chargement ${track.name}:`, e);
+            if (track.url && e.message && e.message.includes('EncodingError')) {
+              console.warn(`💡 CONSEIL: Le fichier "${track.url.split('/').pop()}" a peut-être un format non supporté.`);
             }
-          }).toDestination();
-        }
-        return null;
-      });
-    }
+          }
+        }).toDestination();
+      }
+      return null;
+    });
     
     // Setup Loop
     if (loopRef.current) loopRef.current.dispose();
@@ -204,7 +202,7 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
   };
 
   useEffect(() => {
-    let animationId: number = 0;
+    let animationId: number;
 
     const animate = () => {
       if (isPlaying && backingPlayerRef.current && backingPlayerRef.current.loaded) {
