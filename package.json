@@ -9,9 +9,12 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@stomp/stompjs": "^7.2.1",
     "next": "16.1.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "sockjs": "^0.3.24",
+    "sockjs-client": "^1.6.1",
     "tone": "^15.1.22"
   },
   "devDependencies": {
@@ -19,6 +22,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/sockjs-client": "^1.5.4",
     "eslint": "^9",
     "eslint-config-next": "16.1.4",
     "tailwindcss": "^4",

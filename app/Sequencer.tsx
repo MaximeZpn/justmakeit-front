@@ -1,13 +1,15 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react';
-import * as Tone from 'tone/build/esm/index';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import * as Tone from 'tone';
+import { useCollaboration } from './useCollaboration';
 
 type Sample = { name: string; url: string };
 type Library = Record<string, Sample[]>;
 
 interface SequencerProps {
   initialLibrary: Library;
+  projectId?: string;
 }
 
 interface Track {
@@ -26,7 +28,7 @@ interface BackingLoop {
 const INSTRUMENT_NAMES = ['Kick', 'Snare', 'Hi-Hat', 'Clap'];
 const STEPS = 16;
 
-export default function Sequencer({ initialLibrary }: SequencerProps) {
+export default function Sequencer({ initialLibrary, projectId = "default-room" }: SequencerProps) {
   // --- STATE ---
   const [totalSteps, setTotalSteps] = useState(STEPS);
   const [tracks, setTracks] = useState<Track[]>(() => {
@@ -46,6 +48,8 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [bpm, setBpm] = useState(120);
   const [isDragging, setIsDragging] = useState(false);
+  const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
+  const [backendMessage, setBackendMessage] = useState<string | null>(null);
   const [backingLoop, setBackingLoop] = useState<BackingLoop | null>(null);
   
   const [grid, setGrid] = useState<boolean[][]>(() => 
@@ -69,14 +73,35 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
     Tone.Transport.bpm.value = bpm;
   }, [bpm]);
 
+  // --- COLLABORATION ---
+  const handleIncomingUpdate = useCallback((msg: any) => {
+    if (msg.type === 'NOTE_TOGGLED') {
+      const { trackIndex, stepIndex, active } = msg.payload;
+      setGrid(prev => {
+        const newGrid = [...prev];
+        newGrid[trackIndex] = [...newGrid[trackIndex]];
+        newGrid[trackIndex][stepIndex] = active;
+        return newGrid;
+      });
+    }
+    if (msg.type === 'BPM_CHANGED') {
+      setBpm(msg.payload.bpm);
+    }
+  }, []);
+
+  const { sendMessage, isConnected, myIdentity } = useCollaboration(projectId, handleIncomingUpdate);
+
+  const broadcastBpm = (newBpm: number) => {
+    setBpm(newBpm);
+    sendMessage('BPM_CHANGED', { bpm: newBpm });
+  };
+
   // --- AUDIO ENGINE ---
 
-  // 1. Initialize Players (Tracks)
+  // 1. Initialize Players (Tracks) - Uniquement quand le nombre de pistes change
   useEffect(() => {
-    // Nettoyage des anciens players si le nombre de pistes change
     if (playersRef.current.length !== tracks.length) {
       playersRef.current.forEach(p => p?.dispose());
-      
       playersRef.current = tracks.map((track) => {
         if (track.url) {
           return new Tone.Player({
@@ -94,8 +119,10 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
         return null;
       });
     }
-    
-    // Setup Loop
+  }, [tracks.length]);
+
+  // 2. Setup Sequence Loop - Se recrée si totalSteps ou le nombre de pistes change
+  useEffect(() => {
     if (loopRef.current) loopRef.current.dispose();
 
     loopRef.current = new Tone.Sequence((time, step) => {
@@ -120,9 +147,15 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
 
     return () => {
       loopRef.current?.dispose();
+    };
+  }, [totalSteps, tracks.length]);
+
+  // 3. Nettoyage global au démontage du composant
+  useEffect(() => {
+    return () => {
       playersRef.current.forEach(p => p?.dispose());
     };
-  }, [tracks.length, totalSteps]); // Re-init seulement si structure change
+  }, []);
 
   // 2. Backing Loop Player
   useEffect(() => {
@@ -241,7 +274,7 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
       loopRef.current?.start(0);
     } else {
       Tone.Transport.stop();
-      loopRef.current?.stop();
+      loopRef.current?.stop(Tone.now()); // Correction du crash Tone.js
       setCurrentStep(0);
     }
     setIsPlaying(!isPlaying);
@@ -270,6 +303,41 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
     }
   };
 
+  const sendFileToBackend = async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    console.log(`Envoi du fichier: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} Mo)`);
+
+    try {
+      const response = await fetch('http://localhost:8080/api/audio/analyze-bpm', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json();
+      setBackendMessage(data.serverMessage);
+      if (data.bpm) setDetectedBpm(data.bpm);
+      
+      // Effacer le message après 5 secondes
+      setTimeout(() => setBackendMessage(null), 5000);
+    } catch (error) {
+      console.error("Erreur analyse BPM", error);
+      setBackendMessage("Erreur de connexion au backend");
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await sendFileToBackend(file);
+  };
+
+  const applyDetectedBpm = () => {
+    if (detectedBpm) {
+      broadcastBpm(detectedBpm);
+      setDetectedBpm(null);
+    }
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
@@ -278,6 +346,9 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
     const audioFiles = files.filter(f => f.type.startsWith('audio/') || f.name.match(/\.(wav|mp3)$/i));
     
     if (audioFiles.length === 0) return;
+
+    // Test communication pour le premier fichier déposé
+    sendFileToBackend(audioFiles[0]);
 
     const newTracks = audioFiles.map(file => ({
       name: file.name.replace(/\.[^/.]+$/, ""),
@@ -299,6 +370,7 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
     const audioFile = files.find(f => f.type.startsWith('audio/') || f.name.match(/\.(wav|mp3)$/i));
     
     if (audioFile) {
+      sendFileToBackend(audioFile);
       setBackingLoop({
         name: audioFile.name,
         url: URL.createObjectURL(audioFile),
@@ -361,7 +433,17 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
   const toggleStep = (trackIndex: number, stepIndex: number) => {
     const newGrid = [...grid];
     newGrid[trackIndex][stepIndex] = !newGrid[trackIndex][stepIndex];
+    const newState = newGrid[trackIndex][stepIndex];
     setGrid(newGrid);
+    
+    // Broadcast du changement
+    sendMessage('NOTE_TOGGLED', { trackIndex, stepIndex, active: newState });
+  };
+
+  const copyInviteLink = () => {
+    const url = `${window.location.origin}/project/${projectId}`;
+    navigator.clipboard.writeText(url);
+    alert("Lien d'invitation copié !");
   };
 
   return (
@@ -373,7 +455,16 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
     >
       {/* HEADER & CONTROLS */}
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-purple-400">JustMakeIt !</h2>
+        <div className="flex flex-col">
+          <h2 className="text-2xl font-bold text-purple-400">JustMakeIt !</h2>
+          <div className="flex items-center gap-2 mt-1">
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
+            <span className="text-[10px] font-mono text-gray-400 uppercase tracking-widest">
+              {isConnected ? `${myIdentity} • CONNECTÉ` : 'HORS LIGNE'}
+            </span>
+          </div>
+        </div>
+
         <div className="flex items-center gap-4">
           {/* BPM */}
           <div className="flex flex-col items-center gap-1">
@@ -382,7 +473,7 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
               <input 
                 type="number" 
                 value={bpm} 
-                onChange={(e) => setBpm(Number(e.target.value))}
+                onChange={(e) => broadcastBpm(Number(e.target.value))}
                 className="w-12 bg-gray-800 text-white text-xs rounded px-1 border border-gray-700 focus:border-purple-500 outline-none text-center"
               />
             </div>
@@ -391,14 +482,24 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
               min="60" 
               max="180" 
               value={bpm} 
-              onChange={(e) => setBpm(Number(e.target.value))}
+              onChange={(e) => broadcastBpm(Number(e.target.value))}
               className="w-32 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-purple-500"
             />
             <div className="flex gap-1">
-              {[80, 100, 120, 140].map(p => (
-                <button key={p} onClick={() => setBpm(p)} className={`text-[10px] px-1.5 rounded border border-gray-700 transition-colors ${bpm === p ? 'bg-purple-900 text-purple-200 border-purple-700' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{p}</button>
+              {[90, 110, 120, 140].map(p => (
+                <button key={p} onClick={() => broadcastBpm(p)} className={`text-[10px] px-1.5 rounded border border-gray-700 transition-colors ${bpm === p ? 'bg-purple-900 text-purple-200 border-purple-700' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{p}</button>
               ))}
             </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button onClick={copyInviteLink} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-full text-sm font-semibold border border-gray-700">
+              Inviter 🔗
+            </button>
+            <input type="file" accept=".wav" onChange={handleFileUpload} className="hidden" id="audio-upload-main" />
+            <label htmlFor="audio-upload-main" className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-full text-sm font-semibold cursor-pointer">
+              Analyser WAV
+            </label>
           </div>
 
           <button 
@@ -433,6 +534,18 @@ export default function Sequencer({ initialLibrary }: SequencerProps) {
           </button>
         </div>
       </div>
+
+      {backendMessage && (
+        <div className="mb-4 p-2 bg-green-900/50 border border-green-500 text-green-200 rounded text-center text-xs animate-pulse">
+          {backendMessage}
+        </div>
+      )}
+
+      {detectedBpm && (
+        <button onClick={applyDetectedBpm} className="w-full mb-6 p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-bold animate-pulse shadow-lg shadow-blue-500/20">
+          BPM détecté : {detectedBpm} • Cliquer pour synchroniser tout le monde
+        </button>
+      )}
 
       {/* BACKING LOOP */}
       <div 
